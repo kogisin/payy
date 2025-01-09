@@ -9,6 +9,7 @@ use ethereum_types::{H160, H256, U256, U64};
 use parking_lot::RwLock;
 use secp256k1::{Message, SECP256K1};
 use sha3::{Digest, Keccak256};
+use testutil::eth::EthNode;
 use tracing::warn;
 use web3::contract::tokens::{Tokenizable, TokenizableItem, Tokenize};
 use web3::ethabi::Token;
@@ -31,15 +32,27 @@ pub struct ValidatorSet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Burn {
-    pub to: H160,
+    pub to: H256,
     pub amount: U256,
+    pub kind: H256,
 }
 
 impl From<(H160, U256)> for Burn {
     fn from(item: (H160, U256)) -> Self {
         Self {
+            to: item.0.into(),
+            amount: item.1,
+            kind: H256::zero(),
+        }
+    }
+}
+
+impl From<(H256, U256, H256)> for Burn {
+    fn from(item: (H256, U256, H256)) -> Self {
+        Self {
             to: item.0,
             amount: item.1,
+            kind: item.2,
         }
     }
 }
@@ -51,19 +64,24 @@ impl Tokenizable for Burn {
     {
         match token {
             Token::Tuple(tokens) => {
-                if tokens.len() != 2 {
+                if tokens.len() != 3 {
                     return Err(web3::contract::Error::InvalidOutputType(
-                        "expected tuple of length 2".to_string(),
+                        "expected tuple of length 3".to_string(),
                     ));
                 }
 
                 let mut tokens = tokens.into_iter();
-                let (to, amount) = (tokens.next().unwrap(), tokens.next().unwrap());
+                let (to, amount, kind) = (
+                    tokens.next().unwrap(),
+                    tokens.next().unwrap(),
+                    tokens.next().unwrap(),
+                );
 
-                let to = H160::from_token(to)?;
+                let to = H256::from_token(to)?;
                 let amount = U256::from_token(amount)?;
+                let kind = H256::from_token(kind)?;
 
-                Ok(Self { to, amount })
+                Ok(Self { to, amount, kind })
             }
             _ => Err(web3::contract::Error::InvalidOutputType(
                 "expected tuple".to_string(),
@@ -72,7 +90,11 @@ impl Tokenizable for Burn {
     }
 
     fn into_token(self) -> Token {
-        Token::Tuple(vec![Token::Address(self.to), Token::Uint(self.amount)])
+        Token::Tuple(vec![
+            Token::FixedBytes(self.to.to_fixed_bytes().to_vec()),
+            Token::Uint(self.amount),
+            Token::FixedBytes(self.kind.to_fixed_bytes().to_vec()),
+        ])
     }
 }
 
@@ -116,12 +138,12 @@ impl Tokenizable for ValidatorSet {
 
 impl TokenizableItem for ValidatorSet {}
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct RollupContract {
     pub client: Client,
     pub contract: Contract<Http>,
     pub signer: SecretKey,
-    signer_address: Address,
+    pub signer_address: Address,
     pub domain_separator: H256,
     pub validator_sets: Arc<RwLock<Vec<ValidatorSet>>>,
     address: Address,
@@ -162,7 +184,7 @@ impl RollupContract {
         signer: SecretKey,
     ) -> Result<Self> {
         let contract_json =
-            include_str!("../../../eth/artifacts/contracts/rollup/RollupV1.sol/RollupV1.json");
+            include_str!("../../../eth/artifacts/contracts/rollup/RollupV6.sol/RollupV6.json");
         let contract = client.load_contract_from_str(rollup_contract_addr, contract_json)?;
 
         let domain_separator = client
@@ -187,6 +209,12 @@ impl RollupContract {
         self_.load_all_validators().await?;
 
         Ok(self_)
+    }
+
+    pub async fn from_eth_node(eth_node: &EthNode, secret_key: SecretKey) -> Result<Self> {
+        let rollup_addr = "2279b7a0a67db372996a5fab50d91eaa73d2ebe6";
+        let client = Client::from_eth_node(eth_node);
+        Self::load(client, rollup_addr, secret_key).await
     }
 
     pub fn at_height(self, height: Option<u64>) -> Self {
@@ -303,6 +331,7 @@ impl RollupContract {
         other_hash: [u8; 32],
         height: u64,
         signatures: &[&[u8]],
+        gas_per_burn_call: u128,
     ) -> Result<H256> {
         // Ensure we have the correct number of UTXO inputs
         assert_eq!(utxo_inputs.len(), UTXO_N * UTXO_INPUTS);
@@ -331,7 +360,7 @@ impl RollupContract {
 
         let call_tx = self
             .call(
-                "verifyBlock",
+                "verifyBlock2",
                 (
                     web3::types::Bytes::from(proof),
                     agg_instances.map(|x| convert_element_to_h256(&x)),
@@ -341,6 +370,7 @@ impl RollupContract {
                     H256::from_slice(&other_hash),
                     U256::from(height),
                     Token::Array(signatures),
+                    U256::from(gas_per_burn_call),
                 ),
             )
             .await?;
@@ -526,6 +556,72 @@ impl RollupContract {
         Ok(call_tx)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(err, ret, skip(self, proof))]
+    pub async fn burn_to_address(
+        &self,
+        kind: &Element,
+        to: &Element,
+        proof: &[u8],
+        nullifier: &Element,
+        value: &Element,
+        source: &Element,
+        sig: &Element,
+    ) -> Result<H256> {
+        let call_tx = self
+            .call(
+                "burnToAddress",
+                (
+                    convert_element_to_h256(kind),
+                    convert_element_to_h256(to),
+                    web3::types::Bytes::from(proof),
+                    convert_element_to_h256(nullifier),
+                    convert_element_to_h256(value),
+                    convert_element_to_h256(source),
+                    convert_element_to_h256(sig),
+                ),
+            )
+            .await?;
+
+        Ok(call_tx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(err, ret, skip(self, proof))]
+    pub async fn burn_to_router(
+        &self,
+        kind: &Element,
+        msg_hash: &Element,
+        proof: &[u8],
+        nullifier: &Element,
+        value: &Element,
+        source: &Element,
+        sig: &Element,
+        router: &Address,
+        router_calldata: &[u8],
+        return_address: &Address,
+    ) -> Result<H256> {
+        let call_tx = self
+            .call(
+                "burnToRouter",
+                (
+                    convert_element_to_h256(kind),
+                    convert_element_to_h256(msg_hash),
+                    web3::types::Bytes::from(proof),
+                    convert_element_to_h256(nullifier),
+                    convert_element_to_h256(value),
+                    convert_element_to_h256(source),
+                    convert_element_to_h256(sig),
+                    *router,
+                    web3::types::Bytes::from(router_calldata),
+                    *return_address,
+                ),
+            )
+            .await?;
+
+        Ok(call_tx)
+    }
+
     #[tracing::instrument(err, ret, skip(self))]
     pub async fn get_mint(&self, key: &Element) -> Result<Option<U256>> {
         let mint: U256 = self
@@ -548,12 +644,12 @@ impl RollupContract {
     }
 
     #[tracing::instrument(err, ret, skip(self))]
-    pub async fn get_burn(&self, key: &Element) -> Result<Option<Burn>> {
-        let burn: Burn = self
+    pub async fn has_burn(&self, key: &Element) -> Result<bool> {
+        let exists: bool = self
             .client
             .query(
                 &self.contract,
-                "getBurn",
+                "hasBurn",
                 (convert_element_to_h256(key),),
                 None,
                 Default::default(),
@@ -561,11 +657,39 @@ impl RollupContract {
             )
             .await?;
 
-        if burn.to == H160::zero() && burn.amount == U256::zero() {
-            return Ok(None);
-        }
+        Ok(exists)
+    }
 
-        Ok(Some(burn))
+    #[tracing::instrument(err, ret, skip(self))]
+    pub async fn substitute_burn(&self, nullifier: &Element, value: &Element) -> Result<H256> {
+        let call_tx = self
+            .call(
+                "substituteBurn",
+                (
+                    convert_element_to_h256(nullifier),
+                    U256::from_little_endian(&value.to_le_bytes()),
+                ),
+            )
+            .await?;
+
+        Ok(call_tx)
+    }
+
+    #[tracing::instrument(err, ret, skip(self))]
+    pub async fn was_burn_substituted(&self, nullifier: &Element) -> Result<bool> {
+        let was_substituted: bool = self
+            .client
+            .query(
+                &self.contract,
+                "wasBurnSubstituted",
+                (convert_element_to_h256(nullifier),),
+                None,
+                Default::default(),
+                self.block_height.map(|x| x.into()),
+            )
+            .await?;
+
+        Ok(was_substituted)
     }
 
     #[tracing::instrument(err, ret, skip(self))]

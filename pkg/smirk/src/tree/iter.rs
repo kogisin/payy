@@ -1,14 +1,14 @@
-use std::{collections::btree_map, iter::Copied};
+use std::collections::btree_map;
 
 use crate::{Element, Tree};
 
 #[derive(Debug, Clone)]
 pub struct Elements<'a, V> {
-    inner: Copied<btree_map::Keys<'a, Element, V>>,
+    inner: btree_map::Iter<'a, Element, V>,
 }
 
 impl<'a, V> Iterator for Elements<'a, V> {
-    type Item = Element;
+    type Item = (&'a Element, &'a V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -27,19 +27,19 @@ impl<const DEPTH: usize, V, C> Tree<DEPTH, V, C> {
     /// # use smirk::*;
     /// let tree: Tree<64, _> = smirk! { 1, 2, 3 };
     ///
-    /// let vec: Vec<Element> = tree.elements().collect();
+    /// let vec: Vec<(&Element, &())> = tree.elements().collect();
     ///
     /// assert_eq!(vec, vec![
-    ///   Element::new(1),
-    ///   Element::new(2),
-    ///   Element::new(3),
+    ///   (&Element::new(1), &()),
+    ///   (&Element::new(2), &()),
+    ///   (&Element::new(3), &()),
     /// ]);
     /// ```
     #[inline]
     #[must_use]
     #[doc(alias = "iter")]
     pub fn elements(&self) -> Elements<V> {
-        let inner = self.entries.keys().copied();
+        let inner = self.entries.iter();
         Elements { inner }
     }
 }

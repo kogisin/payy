@@ -1,4 +1,7 @@
-use crate::{hash_cache::NoopHashCache, Element};
+use crate::{
+    hash_cache::{HashCache, NoopHashCache},
+    Element,
+};
 use std::collections::BTreeMap;
 
 mod batch;
@@ -10,7 +13,6 @@ mod path;
 mod raw_api;
 mod tree_repr;
 
-use bitvec::vec::BitVec;
 pub use error::{Collision, CollisionError};
 pub use iter::{Elements, IntoIter, Iter};
 pub use path::Path;
@@ -33,7 +35,7 @@ pub mod proptest;
 /// tree.insert(Element::new(2), 234);
 /// tree.insert(Element::new(3), 345);
 ///
-/// assert!(tree.contains_element(Element::new(1)));
+/// assert!(tree.contains_element(&Element::new(1)));
 ///
 /// for (element, value) in tree.iter() {
 ///     println!("the tree contains {value} at element {element}");
@@ -164,15 +166,15 @@ impl<const DEPTH: usize, V, C> Tree<DEPTH, V, C> {
     /// # use smirk::*;
     /// let tree: Tree<64, _> = smirk! { 1, 2, 3 };
     ///
-    /// assert_eq!(tree.contains_element(Element::new(1)), true);
-    /// assert_eq!(tree.contains_element(Element::new(2)), true);
-    /// assert_eq!(tree.contains_element(Element::new(3)), true);
-    /// assert_eq!(tree.contains_element(Element::new(4)), false);
+    /// assert_eq!(tree.contains_element(&Element::new(1)), true);
+    /// assert_eq!(tree.contains_element(&Element::new(2)), true);
+    /// assert_eq!(tree.contains_element(&Element::new(3)), true);
+    /// assert_eq!(tree.contains_element(&Element::new(4)), false);
     /// ```
     #[inline]
     #[must_use]
-    pub fn contains_element(&self, element: Element) -> bool {
-        self.entries.contains_key(&element)
+    pub fn contains_element(&self, element: &Element) -> bool {
+        self.entries.contains_key(element)
     }
 
     /// The root hash of the tree
@@ -201,7 +203,12 @@ impl<const DEPTH: usize, V, C> Tree<DEPTH, V, C> {
     pub fn root_hash(&self) -> Element {
         self.tree.hash()
     }
+}
 
+impl<const DEPTH: usize, V, C> Tree<DEPTH, V, C>
+where
+    C: HashCache,
+{
     /// Compute what the root hash would be if all of `extra_elements` were inserted
     ///
     /// ```rust
@@ -215,7 +222,9 @@ impl<const DEPTH: usize, V, C> Tree<DEPTH, V, C> {
     /// ```
     #[inline]
     #[must_use]
+    #[tracing::instrument(skip(self))]
     pub fn root_hash_with(&self, extra_elements: &[Element]) -> Element {
-        self.tree.hash_with::<DEPTH>(extra_elements, &BitVec::new())
+        self.tree
+            .hash_with::<DEPTH, C>(self.cache(), extra_elements.to_vec())
     }
 }

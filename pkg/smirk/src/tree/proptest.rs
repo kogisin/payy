@@ -16,7 +16,7 @@ where
     fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
         any::<(C, Batch<DEPTH, V>)>().prop_map(|(cache, batch)| {
             let mut tree = Tree::new_with_cache(cache);
-            tree.insert_batch(batch).unwrap();
+            tree.insert_batch(batch, |_| {}, |_| {}).unwrap();
             tree
         })
     }

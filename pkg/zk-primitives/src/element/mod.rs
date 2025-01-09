@@ -20,6 +20,12 @@ pub use lsb::Lsb;
 #[cfg(feature = "serde")]
 mod serde;
 
+#[cfg(feature = "diesel")]
+mod diesel_pg;
+
+// #[cfg(feature = "diesel")]
+// use diesel::sql_types::*;
+
 /// A 256-bit unsigned integer
 ///
 /// This type is a wrapper around a [`U256`], so can represent any value in the range `0..=(2^256 -
@@ -31,6 +37,11 @@ mod serde;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(
+    feature = "diesel",
+    derive(::diesel::expression::AsExpression, ::diesel::deserialize::FromSqlRow)
+)]
+#[cfg_attr(feature = "diesel", diesel(sql_type = ::diesel::sql_types::Numeric))]
 pub struct Element(#[cfg_attr(feature = "serde", serde(with = "serde"))] pub(crate) U256);
 
 impl Element {

@@ -78,7 +78,7 @@ pub fn create_tree(b: &mut BenchmarkRun) {
         let batch = make_batch(1000);
 
         let mut tree = smirk::Tree::<160, ()>::new();
-        let _ = tree.insert_batch(batch);
+        let _ = tree.insert_batch(batch, |_| {}, |_| {});
 
         black_box(tree);
     });

@@ -7,7 +7,7 @@ use halo2_base::halo2_proofs::{
 
 use crate::{
     aggregate_utxo::AggregateUtxo,
-    data::{AggregateAgg, Burn, Mint, ParameterSet, Points, Signature, Utxo},
+    data::{AggregateAgg, Burn, BurnTo, Mint, ParameterSet, Points, Signature, Utxo},
 };
 
 type VK = VerifyingKey<G1Affine>;
@@ -44,7 +44,6 @@ vk_function!(points, Points);
 vk_function!(utxo, Utxo::<161>);
 vk_function!(utxo_agg_3_161_12, AggregateUtxo::<3, 161, 12>);
 
-
 pub enum CircuitKind {
     Signature,
     Points,
@@ -52,6 +51,7 @@ pub enum CircuitKind {
     AggUtxo,
     AggAgg,
     Burn,
+    BurnTo,
     Mint,
 }
 
@@ -65,6 +65,7 @@ impl CircuitKind {
             Self::AggAgg => ParameterSet::TwentyOne,
             Self::Signature => ParameterSet::Six,
             Self::Burn => ParameterSet::Nine,
+            Self::BurnTo => ParameterSet::Nine,
             Self::Mint => ParameterSet::Eight,
         }
     }
@@ -95,6 +96,7 @@ impl CircuitKind {
         static AGG_UTXO: OnceLock<(PK, VK)> = OnceLock::new();
         static AGG_AGG: OnceLock<(PK, VK)> = OnceLock::new();
         static BURN_KEYS: OnceLock<(PK, VK)> = OnceLock::new();
+        static BURN_TO_KEYS: OnceLock<(PK, VK)> = OnceLock::new();
         static MINT: OnceLock<(PK, VK)> = OnceLock::new();
 
         match self {
@@ -104,6 +106,7 @@ impl CircuitKind {
             Self::AggUtxo => AGG_UTXO.get_or_init(|| create!(self, AggregateUtxo::<3, 161, 12>)),
             Self::AggAgg => AGG_AGG.get_or_init(|| create!(self, AggregateAgg::<2>)),
             Self::Burn => BURN_KEYS.get_or_init(|| create!(self, Burn::<1>)),
+            Self::BurnTo => BURN_TO_KEYS.get_or_init(|| create!(self, BurnTo::<1>)),
             Self::Mint => MINT.get_or_init(|| create!(self, Mint::<1>)),
         }
     }

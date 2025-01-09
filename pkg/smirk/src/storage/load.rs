@@ -23,33 +23,34 @@ pub(super) fn load_tree<const DEPTH: usize, V>(
 where
     V: BorshDeserialize + BorshSerialize + Debug + Clone + Send + Sync + 'static,
 {
-    let entries = entries::<V>(db).collect::<Result<Vec<_>, _>>()?;
+    let mut known_hashes = Vec::new();
+    let mut smirk_kv = Vec::new();
 
-    let cache = SimpleHashCache::new();
+    for entry in entries::<V>(db) {
+        match entry {
+            Ok(RocksbEntry::KnownHash(hash)) => known_hashes.push(hash),
+            Ok(RocksbEntry::SmirkKV { key, value }) => smirk_kv.push((key, value)),
+            Err(err) => return Err(err),
+        }
+    }
 
-    cache.provide_known_hashes(entries.iter().filter_map(|entry| match entry {
-        RocksbEntry::KnownHash(hash) => Some(*hash),
-        RocksbEntry::SmirkKV { .. } => None,
-    }));
+    let mut cache = SimpleHashCache::new();
 
-    let kv_pairs = entries.into_iter().filter_map(|entry| match entry {
-        RocksbEntry::KnownHash(..) => None,
-        RocksbEntry::SmirkKV { key, value } => Some((key, value)),
-    });
+    cache.provide_known_hashes(known_hashes);
 
     let mut smirk = Tree::<DEPTH, V, SimpleHashCache>::new_with_cache(cache);
 
     let mut batch = Batch::new();
-    for (key, value) in kv_pairs {
+    for (key, value) in smirk_kv {
         batch.insert(key, value)?;
     }
 
-    smirk.insert_batch(batch)?;
+    smirk.insert_batch(batch, |_| {}, |_| {})?;
 
     Ok(smirk)
 }
 
-fn entries<V>(db: &DB) -> impl Iterator<Item = Result<RocksbEntry<V>, Error>> + '_
+pub(crate) fn entries<V>(db: &DB) -> impl Iterator<Item = Result<RocksbEntry<V>, Error>> + '_
 where
     V: Debug + Clone + Sync + Send + 'static + BorshSerialize + BorshDeserialize,
 {
@@ -87,7 +88,7 @@ where
 }
 
 /// Possible meanings of a key-value pair in rocksdb
-enum RocksbEntry<V> {
+pub(crate) enum RocksbEntry<V> {
     /// A smirk key-value pair (i.e. an element and its metadata)
     SmirkKV { key: Element, value: V },
     /// A precomputed hash merge

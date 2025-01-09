@@ -1,5 +1,6 @@
 use std::{collections::HashSet, path::PathBuf};
 
+use expect_test::expect_file;
 use tempdir::TempDir;
 use test_strategy::proptest;
 
@@ -47,7 +48,7 @@ fn simple_storage_test() {
 
     // now load it again
     let persistent = Persistent::<64, i32>::load(&path).unwrap();
-    assert!(persistent.tree().contains_element(Element::ONE));
+    assert!(persistent.tree().contains_element(&Element::ONE));
     assert!(persistent.tree().get(Element::ONE) == Some(&1));
 }
 
@@ -89,10 +90,67 @@ fn insert_batch_works(batch_1: Batch<64, i32>, mut batch_2: Batch<64, i32>) {
     let loaded = Persistent::<64, i32>::load(&path).unwrap();
 
     for element in batch_1_elements {
-        assert!(loaded.tree().contains_element(element));
+        assert!(loaded.tree().contains_element(&element));
     }
 
     for element in batch_2_elements {
-        assert!(loaded.tree().contains_element(element));
+        assert!(loaded.tree().contains_element(&element));
     }
+}
+
+macro_rules! expect_storage_known_hashes {
+    ($persistent:expr, hashes: $expected_hashes:expr) => {{
+        use crate::storage::load::{entries, RocksbEntry};
+
+        let known_hashes_in_db = entries::<()>($persistent.db())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| match entry {
+                RocksbEntry::KnownHash(hash) => Some(*hash),
+                RocksbEntry::SmirkKV { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        let expected_hashes = $expected_hashes;
+        expected_hashes.assert_debug_eq(&known_hashes_in_db);
+    }};
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn insert_batch_hash_test() {
+    let (_dir, path) = setup_path();
+    let mut persistent = Persistent::<64, ()>::new(&path).unwrap();
+
+    expect_storage_known_hashes!(
+        persistent,
+        hashes:
+            expect_test::expect![[r#"
+            []
+        "#]]
+    );
+
+    let batch = batch! { 1, 2, 3 };
+    persistent.insert_batch(batch).unwrap();
+    expect_storage_known_hashes!(
+        persistent,
+        hashes: expect_file!["test-snapshots/known_hashes_1.txt"]
+    );
+
+    let batch_2 = batch! { 4, 5, 6 };
+    persistent.insert_batch(batch_2).unwrap();
+    expect_storage_known_hashes!(
+        persistent,
+        hashes: expect_file!["test-snapshots/known_hashes_2.txt"]
+    );
+
+    drop(persistent);
+
+    let loaded = Persistent::<64, ()>::load(&path).unwrap();
+
+    expect_storage_known_hashes!(
+        loaded,
+        hashes: expect_file!["test-snapshots/known_hashes_2.txt"]
+    );
 }

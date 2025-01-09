@@ -31,6 +31,26 @@ impl<const L: usize> Default for Burn<L> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct BurnTo<const L: usize> {
+    pub secret_key: Element,
+    pub notes: [Note; L],
+    pub kind: Element,
+    pub to_address: Element,
+}
+
+// https://github.com/rust-lang/rust/issues/61415
+impl<const L: usize> Default for BurnTo<L> {
+    fn default() -> Self {
+        Self {
+            secret_key: Element::default(),
+            notes: core::array::from_fn(|_| Note::default()),
+            to_address: Element::default(),
+            kind: Element::default(),
+        }
+    }
+}
+
 // TODO: change Fr to Element
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Note {
@@ -241,4 +261,88 @@ impl<const AGG_N: usize> Default for AggregateAgg<AGG_N> {
 
         Self::new(core::array::from_fn(|_| aggregate_utxo.clone()))
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NoteURLPayload {
+    pub version: u8,
+    pub private_key: Element,
+    pub psi: Option<Element>,
+    pub value: Element,
+    pub referral_code: String,
+}
+
+pub fn decode_activity_url_payload(payload: &str) -> NoteURLPayload {
+    let payload_bytes = bs58::decode(payload)
+        .into_vec()
+        .expect("Failed to decode base58 payload");
+
+    let mut rest = &payload_bytes[..];
+
+    let version = rest[0];
+    rest = &rest[1..];
+
+    let private_key_bytes: [u8; 32] = rest[..32]
+        .try_into()
+        .expect("Not enough bytes for private_key");
+    let private_key = Element::from_be_bytes(private_key_bytes);
+    rest = &rest[32..];
+
+    let psi = if version == 0 {
+        let psi_bytes: [u8; 32] = rest[..32].try_into().expect("Not enough bytes for psi");
+        rest = &rest[32..];
+        Some(Element::from_be_bytes(psi_bytes))
+    } else {
+        None
+    };
+
+    let leading_zeros = rest[0] as usize;
+    rest = &rest[1..];
+
+    let value_len = 32 - leading_zeros;
+    let value_without_leading_zeros = &rest[..value_len];
+    rest = &rest[value_len..];
+
+    let mut value_bytes = [0u8; 32];
+    value_bytes[leading_zeros..].copy_from_slice(value_without_leading_zeros);
+    let value = Element::from_be_bytes(value_bytes);
+
+    let referral_code = String::from_utf8(rest.to_vec()).expect("Invalid UTF-8 in referral code");
+
+    NoteURLPayload {
+        version,
+        private_key,
+        psi,
+        value,
+        referral_code,
+    }
+}
+
+pub fn encode_activity_url_payload(payload: &NoteURLPayload) -> String {
+    let mut bytes = Vec::new();
+
+    // Encode version
+    bytes.push(payload.version);
+
+    // Encode private_key
+    bytes.extend_from_slice(&payload.private_key.to_be_bytes());
+
+    // Encode psi if version is 0
+    if let Some(psi) = &payload.psi {
+        if payload.version == 0 {
+            bytes.extend_from_slice(&psi.to_be_bytes());
+        }
+    }
+
+    // Encode value with leading zeros
+    let value_bytes = payload.value.to_be_bytes();
+    let leading_zeros = value_bytes.iter().take_while(|&&b| b == 0).count();
+    bytes.push(leading_zeros as u8);
+    bytes.extend_from_slice(&value_bytes[leading_zeros..]);
+
+    // Encode referral_code as UTF-8
+    bytes.extend_from_slice(payload.referral_code.as_bytes());
+
+    // Return Base58-encoded string
+    bs58::encode(bytes).into_string()
 }

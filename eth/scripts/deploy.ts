@@ -2,6 +2,7 @@ import { readFile } from 'fs/promises'
 import { join } from 'path'
 import hre from 'hardhat'
 import { encodeFunctionData } from 'viem'
+import { deployBin } from './shared'
 
 const USDC_ADDRESSES: Record<string, string> = {
   // Ethereum Mainnet
@@ -16,6 +17,7 @@ const USDC_ADDRESSES: Record<string, string> = {
 
 async function main(): Promise<void> {
   const chainId = hre.network.config.chainId ?? 'DEV'
+  const useNoopVerifier = process.env.DEV_USE_NOOP_VERIFIER === '1'
   const [owner] = await hre.viem.getWalletClients()
   const publicClient = await hre.viem.getPublicClient()
 
@@ -31,6 +33,19 @@ async function main(): Promise<void> {
   } else {
     usdcAddress = USDC_ADDRESSES[chainId]
   }
+
+  let acrossSpokePool = process.env.ACROSS_SPOKE_POOL as `0x${string}` | undefined
+  if (acrossSpokePool !== undefined && !acrossSpokePool.startsWith('0x')) {
+    throw new Error('ACROSS_SPOKE_POOL is not a valid address')
+  }
+
+  if (!isDev && useNoopVerifier) {
+    throw new Error('Cannot use no-op verifier if not deploying for dev')
+  } else if (useNoopVerifier) {
+    console.warn('Warning: using no-op verifier')
+  }
+
+  const maybeNoopVerifier = (verifier: string) => useNoopVerifier ? 'NoopVerifier.bin' : verifier
 
   let proverAddress = process.env.PROVER_ADDRESS as `0x${string}`
   let validators = process.env.VALIDATORS?.split(',') ?? [] as Array<`0x${string}`>
@@ -57,7 +72,7 @@ async function main(): Promise<void> {
   console.error({ proverAddress, validators, ownerAddress, deployerIsProxyAdmin })
 
   // Aggregate verifier
-  const aggregateBinAddr = await deployBin('AggregateVerifier.bin')
+  const aggregateBinAddr = await deployBin(maybeNoopVerifier('AggregateVerifier.bin'))
   console.log(`AGGREGATE_BIN_ADDR=${aggregateBinAddr}`)
 
   const aggregateVerifier = await hre.viem.deployContract('AggregateVerifierV1', [aggregateBinAddr], {})
@@ -137,6 +152,26 @@ async function main(): Promise<void> {
     }
   }
 
+  async function maybeCallAsRollupOwner(to: `0x${string}`, calldata: `0x${string}`) {
+    if (deployerIsProxyAdmin) {
+      const tx = await owner.sendTransaction({
+        to,
+        data: calldata
+      })
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: tx
+      })
+      if (receipt.status === 'reverted') {
+        throw new Error(`Transaction ${tx} reverted. To: ${to}, Calldata: ${calldata}`)
+      }
+    } else {
+      console.log('Deployer is not the owner, skipping call')
+      console.log('Please make a call with the following arguments:')
+      console.log('\tTo:', to)
+      console.log('\tCalldata:', calldata)
+    }
+  }
+
   await maybeUpgrade(
     rollupProxy.address,
     rollupV2.address,
@@ -175,7 +210,12 @@ async function main(): Promise<void> {
     rollupV4InitializeCalldata
   )
 
-  console.log(`ROLLUP_CONTRACT_ADDR=${rollupProxy.address}`)
+  // Burn verifier V2
+  const burnV2BinAddr = await deployBin('BurnVerifierV2.bin')
+  console.log(`BURN_V2_BIN_ADDR=${burnV2BinAddr}`)
+
+  const burnVerifierV2 = await hre.viem.deployContract('BurnVerifierV2', [burnV2BinAddr], {})
+  console.log(`BURN_VERIFIER_V2_ADDR=${burnVerifierV2.address}`)
 
   const [signerOwner] = await hre.ethers.getSigners()
   const usdc = await hre.ethers.getContractAt('IUSDC', usdcAddress, signerOwner)
@@ -188,43 +228,88 @@ async function main(): Promise<void> {
       })
     }
 
-    let res = await usdc.initialize('USD Coin', 'USDC', 'USD', 6, signerOwner.address, signerOwner.address, signerOwner.address, signerOwner.address)
+    let res = await usdc.initialize('USD Coin', 'USDC', 'USD', 6, signerOwner.address, signerOwner.address, signerOwner.address, signerOwner.address, {
+      gasLimit: 1_000_000
+    })
     await res.wait()
-    res = await usdc.initializeV2('USD Coin')
+    res = await usdc.initializeV2('USD Coin', {
+      gasLimit: 1_000_000
+    })
     await res.wait()
-    res = await usdc.initializeV2_1(signerOwner.address)
+    res = await usdc.initializeV2_1(signerOwner.address, {
+      gasLimit: 1_000_000
+    })
     await res.wait()
-    res = await usdc.configureMinter(signerOwner.address, hre.ethers.parseUnits('1000000', 6))
+    res = await usdc.configureMinter(signerOwner.address, hre.ethers.parseUnits('1000000000', 6), {
+      gasLimit: 1_000_000
+    })
     await res.wait()
 
-    res = await usdc.mint(signerOwner.address, hre.ethers.parseUnits('1000000', 6))
+    res = await usdc.mint(signerOwner.address, hre.ethers.parseUnits('1000000000', 6), {
+      gasLimit: 1_000_000
+    })
     await res.wait()
   }
 
   // Approve our rollup contract to spend USDC from the primary owner account
-  const res = await usdc.approve(rollupProxy.address, hre.ethers.MaxUint256)
+  const res = await usdc.approve(rollupProxy.address, hre.ethers.MaxUint256, {
+    gasLimit: 1_000_000
+  })
   await res.wait()
-  console.error('All contracts deployed')
-}
 
-async function deployBin(binFile: string): Promise<`0x${string}`> {
-  const bin = (await readFile(`contracts/${binFile}`)).toString().trimEnd()
+  const rollupV5 = await hre.viem.deployContract('RollupV5', [])
+  console.log(`ROLLUP_V5_CONTRACT_ADDR=${rollupV5.address}`)
 
-  // console.log('Deploying contract of size: ', bin.length / 2, 'bytes')
-
-  const [owner] = await hre.viem.getWalletClients()
-  const verifierTx = await owner.deployContract({
-    account: owner.account,
-    bytecode: `0x${bin}`,
-    abi: []
+  const rollupV5InitializeCalldata = encodeFunctionData({
+    abi: [rollupV5.abi.find((x) => x.type === 'function' && x.name === 'initializeV5') as any],
+    // @ts-expect-error We know the ABI has this function
+    name: 'initializeV5',
+    args: [burnVerifierV2.address]
   })
 
-  const publicClient = await hre.viem.getPublicClient()
-  const verifierAddr = (await publicClient.waitForTransactionReceipt({ hash: verifierTx })).contractAddress
+  await maybeUpgrade(
+    rollupProxy.address,
+    rollupV5.address,
+    rollupV5InitializeCalldata
+  )
 
-  if (verifierAddr === null) throw new Error('Verifier address not found')
+  console.log(`ROLLUP_CONTRACT_ADDR=${rollupProxy.address}`)
 
-  return verifierAddr
+  const rollupProxyV5 = await hre.viem.getContractAt('RollupV5', rollupProxy.address)
+
+  const burnToAddressRouter = await hre.viem.deployContract('BurnToAddressRouter', [], {})
+  console.log(`BURN_TO_ADDRESS_ROUTER_CONTRACT_ADDR=${burnToAddressRouter.address}`)
+
+  await maybeCallAsRollupOwner(rollupProxy.address, encodeFunctionData({
+    abi: [rollupProxyV5.abi.find((x) => x.type === 'function' && x.name === 'addRouter') as any],
+    // @ts-expect-error We know the ABI has this function
+    name: 'addRouter',
+    args: [burnToAddressRouter.address]
+  }))
+
+  const rollupV6 = await hre.viem.deployContract('RollupV6', [])
+  console.log(`ROLLUP_V6_CONTRACT_ADDR=${rollupV6.address}`)
+
+  const rollupV6InitializeCalldata = encodeFunctionData({
+    abi: [rollupV6.abi.find((x) => x.type === 'function' && x.name === 'initializeV6') as any],
+    // @ts-expect-error We know the ABI has this function
+    name: 'initializeV6',
+    args: []
+  })
+
+  await maybeUpgrade(
+    rollupProxy.address,
+    rollupV6.address,
+    rollupV6InitializeCalldata
+  )
+
+  if (isDev && acrossSpokePool === undefined) {
+    acrossSpokePool = '0x0000000000000000000000000000000000000000'
+  }
+  const acrossWithAuthorization = await hre.viem.deployContract('AcrossWithAuthorization', [acrossSpokePool])
+  console.log(`ACROSS_WITH_AUTHORIZATION_CONTRACT_ADDR=${acrossWithAuthorization.address}`)
+
+  console.error('All contracts deployed')
 }
 
 main().catch((error) => {

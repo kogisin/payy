@@ -14,11 +14,13 @@ artifacts/@openzeppelin
 artifacts/artifacts.d.ts
 artifacts/contracts/AggregateVerifierV1.sol
 artifacts/contracts/BurnVerifierV1.sol
+artifacts/contracts/BurnVerifierV2.sol
 artifacts/contracts/IUSDC.sol/IUSDC.d.ts
 artifacts/contracts/IUSDC.sol/IUSDC.dbg.json
 artifacts/contracts/IUSDC.sol/artifacts.d.ts
 artifacts/contracts/MintVerifierV1.sol
 artifacts/contracts/Verifier.sol
+artifacts/contracts/rollup/RollupV1.sol
 artifacts/contracts/rollup/RollupV2.sol
 artifacts/contracts/rollup/RollupV3.sol
 artifacts/contracts/rollup/RollupV4.sol

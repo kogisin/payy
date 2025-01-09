@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use rocksdb::WriteBatch;
 use wire_message::WireMessage;
 
 use crate::{
-    hash_cache::KnownHash,
     storage::format::{ValueFormat, ValueV2},
     Batch,
 };
@@ -28,9 +30,9 @@ impl<const DEPTH: usize, V> Persistent<DEPTH, V> {
     ///
     /// persistent.insert_batch(batch).unwrap();
     ///
-    /// assert!(persistent.tree().contains_element(Element::new(1)));
-    /// assert!(persistent.tree().contains_element(Element::new(2)));
-    /// assert!(persistent.tree().contains_element(Element::new(3)));
+    /// assert!(persistent.tree().contains_element(&Element::new(1)));
+    /// assert!(persistent.tree().contains_element(&Element::new(2)));
+    /// assert!(persistent.tree().contains_element(&Element::new(3)));
     /// ```
     pub fn insert_batch(&mut self, batch: Batch<DEPTH, V>) -> Result<(), Error>
     where
@@ -42,21 +44,25 @@ impl<const DEPTH: usize, V> Persistent<DEPTH, V> {
 
         let new_kv_pairs: HashMap<_, _> = batch.entries().cloned().collect();
 
-        let old_hashes: HashSet<_> = self.tree.known_hashes().into_iter().collect();
-
-        self.tree.insert_batch(batch)?;
-
-        let new_hashes: HashSet<_> = self.tree.known_hashes().into_iter().collect();
-
-        let hashes_to_insert = new_hashes
-            .iter()
-            .copied()
-            .filter(|h| !old_hashes.contains(h));
-
-        let hashes_to_remove = old_hashes
-            .iter()
-            .copied()
-            .filter(|h| !new_hashes.contains(h));
+        let hash_changes = Arc::new(Mutex::new(HashMap::new()));
+        self.tree.insert_batch(
+            batch,
+            |(left, right)| {
+                hash_changes.lock().unwrap().insert((*left, *right), None);
+            },
+            |(left, right, result)| {
+                hash_changes
+                    .lock()
+                    .unwrap()
+                    .insert((*left, *right), Some(*result));
+            },
+        )?;
+        let (hashes_to_insert, hashes_to_remove): (Vec<_>, Vec<_>) = Arc::try_unwrap(hash_changes)
+            .unwrap()
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .partition(|(_hash, result)| result.is_some());
 
         let mut write_batch = WriteBatch::default();
 
@@ -72,19 +78,14 @@ impl<const DEPTH: usize, V> Persistent<DEPTH, V> {
             write_batch.delete(old_key.to_bytes().unwrap());
         }
 
-        for KnownHash { left, right, .. } in hashes_to_remove {
+        for ((left, right), _) in hashes_to_remove {
             let key = KeyFormat::V2(KeyV2::KnownHash { left, right });
             write_batch.delete(key.to_bytes().unwrap());
         }
 
-        for KnownHash {
-            left,
-            right,
-            result,
-        } in hashes_to_insert
-        {
+        for ((left, right), result) in hashes_to_insert {
             let key = KeyFormat::V2(KeyV2::KnownHash { left, right });
-            let value = ValueFormat::<V>::V2(ValueV2::KnownHash(result));
+            let value = ValueFormat::<V>::V2(ValueV2::KnownHash(result.unwrap()));
             write_batch.put(key.to_bytes().unwrap(), value.to_bytes().unwrap());
         }
 

@@ -2,6 +2,7 @@
 #![feature(is_some_and)]
 #![deny(clippy::disallowed_methods)]
 
+mod across;
 mod client;
 mod constants;
 mod error;
@@ -12,6 +13,7 @@ mod usdc;
 pub mod util;
 pub mod wallet;
 
+pub use across::AcrossWithAuthorizationContract;
 pub use client::Client;
 pub use error::{Error, Result};
 pub use rollup::RollupContract;

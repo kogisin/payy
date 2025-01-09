@@ -1,3 +1,5 @@
+use zk_primitives::Element;
+
 use crate::{hash_cache::HashCache, Batch, Collision, CollisionError, Tree};
 
 impl<const DEPTH: usize, V, C: HashCache> Tree<DEPTH, V, C> {
@@ -60,21 +62,27 @@ impl<const DEPTH: usize, V, C: HashCache> Tree<DEPTH, V, C> {
     /// let mut tree: Tree<64, ()> = smirk! { 1, 2, 3 };
     /// let batch: Batch<64, ()> = batch! { 4, 5 };
     ///
-    /// tree.insert_batch(batch).unwrap();
+    /// tree.insert_batch(batch, |_| {}, |_| {}).unwrap();
     ///
     /// assert_eq!(tree, smirk! { 1, 2, 3, 4, 5 });
     /// ```
-    pub fn insert_batch(&mut self, batch: Batch<DEPTH, V>) -> Result<(), CollisionError> {
+    #[tracing::instrument(skip_all, fields(batch_count = batch.entries.len()))]
+    pub fn insert_batch(
+        &mut self,
+        batch: Batch<DEPTH, V>,
+        hash_remove_callback: impl Fn((&Element, &Element)) + Send + Sync,
+        hash_set_callback: impl Fn((&Element, &Element, &Element)) + Send + Sync,
+    ) -> Result<(), CollisionError> {
         self.check_collisions(&batch)?;
 
         let Batch { entries, .. } = batch;
 
-        for (element, value) in entries {
-            // unwrap is fine because we check for collisions earlier
-            self.insert_without_hashing(element, value).unwrap();
-        }
+        self.insert_without_hashing(entries).unwrap();
 
-        self.tree.recalculate_hashes(&self.cache);
+        tracing::info_span!("recalculate_hashes").in_scope(|| {
+            self.tree
+                .recalculate_hashes(&self.cache, &hash_remove_callback, &hash_set_callback);
+        });
 
         Ok(())
     }
@@ -92,25 +100,25 @@ mod tests {
     fn can_always_insert_into_empty_tree(batch: Batch<64, ()>) {
         let elements: HashSet<_> = batch.elements().collect();
         let mut tree = Tree::<64, ()>::new();
-        tree.insert_batch(batch).unwrap();
+        tree.insert_batch(batch, |_| {}, |_| {}).unwrap();
 
         for element in elements {
-            assert!(tree.contains_element(element));
+            assert!(tree.contains_element(&element));
         }
     }
 
     #[proptest]
     fn fixed_batch_can_always_insert(mut batch: Batch<64, ()>, mut tree: Tree<64, ()>) {
-        for element in tree.elements() {
-            batch.remove(element);
+        for (element, _) in tree.elements() {
+            batch.remove(*element);
         }
 
         let elements_in_batch: HashSet<_> = batch.elements().collect();
 
-        tree.insert_batch(batch).unwrap();
+        tree.insert_batch(batch, |_| {}, |_| {}).unwrap();
 
         for element in elements_in_batch {
-            assert!(tree.contains_element(element));
+            assert!(tree.contains_element(&element));
         }
     }
 }

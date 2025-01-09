@@ -42,6 +42,16 @@ where
     }
 }
 
+impl<T> Opaque<T>
+where
+    T: serde::Serialize,
+{
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        let bytes = serde_json::to_vec(&self.0)?;
+        Ok(base64::prelude::BASE64_STANDARD.encode(bytes))
+    }
+}
+
 impl<T> Opaque<T> {
     pub fn into_inner(self) -> T {
         self.0

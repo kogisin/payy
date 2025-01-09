@@ -52,7 +52,7 @@ impl<const DEPTH: usize, V, C> Tree<DEPTH, V, C> {
     where
         C: HashCache,
     {
-        self.insert_batch(batch! { element => value })
+        self.insert_batch(batch! { element => value }, |_| {}, |_| {})
     }
 
     /// Insert multiple non-null elements, returning [`Path`]s which prove each element's existence

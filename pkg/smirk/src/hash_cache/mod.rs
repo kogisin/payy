@@ -60,6 +60,7 @@ impl HashCache for NoopHashCache {}
 #[derive(Debug, Clone, Default)]
 pub struct SimpleHashCache {
     inner: Arc<DashMap<(Element, Element), Element>>,
+    initial: Arc<Vec<KnownHash>>,
     metrics: metrics::CacheMetrics,
 }
 
@@ -67,6 +68,14 @@ impl HashCache for SimpleHashCache {
     #[inline]
     fn hash(&self, left: Element, right: Element) -> Element {
         self.metrics.incr_hashes();
+
+        if let Ok(result) = self
+            .initial
+            .binary_search_by_key(&(left, right), |hash| (hash.left, hash.right))
+        {
+            self.metrics.incr_cache_hits();
+            return self.initial[result].result;
+        }
 
         match self.inner.entry((left, right)) {
             Entry::Occupied(entry) => {
@@ -108,10 +117,14 @@ impl SimpleHashCache {
     /// Note that these hashes will not be validated - providing incorrect hashes will lead to
     /// incorrect results
     #[inline]
-    pub fn provide_known_hashes(&self, hashes: impl IntoIterator<Item = KnownHash>) {
-        for hash in hashes {
-            self.inner.insert((hash.left, hash.right), hash.result);
-        }
+    pub fn provide_known_hashes(&mut self, mut hashes: Vec<KnownHash>) {
+        hashes.sort_unstable_by_key(|hash| (hash.left, hash.right));
+
+        assert!(
+            self.initial.is_empty(),
+            "provide_known_hashes should only be called once"
+        );
+        self.initial = Arc::new(hashes);
     }
 
     /// Remove the result of a hash from memory

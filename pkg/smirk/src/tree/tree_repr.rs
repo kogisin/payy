@@ -1,6 +1,6 @@
-use bitvec::{prelude::Msb0, slice::BitSlice, vec::BitVec};
+use bitvec::{prelude::Msb0, vec::BitVec};
 
-use crate::{hash::empty_tree_hash, hash_cache::HashCache, hash_merge, Collision, Element};
+use crate::{hash::empty_tree_hash, hash_cache::HashCache, Collision, Element};
 
 use super::StructName;
 
@@ -27,60 +27,84 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub fn hash_with<const DEPTH: usize>(
+    pub fn hash_with<const DEPTH: usize, C: HashCache>(
         &self,
-        extra_elements: &[Element],
-        path: &BitSlice,
+        cache: &C,
+        extra_elements: Vec<Element>,
     ) -> Element {
-        fn make_paths(path: &BitSlice) -> (BitVec, BitVec) {
-            let mut left_path = path.to_bitvec();
-            left_path.push(false);
-            let mut right_path = path.to_bitvec();
-            right_path.push(true);
+        let mut extra_elements_with_bits = extra_elements
+            .into_iter()
+            .map(|e| (e, e.lsb(DEPTH - 1).to_bitvec()))
+            .collect::<Vec<_>>();
 
-            (left_path, right_path)
-        }
+        extra_elements_with_bits.sort_unstable_by(|(_, a_bits), (_, b_bits)| a_bits.cmp(b_bits));
 
+        let (elements, bits): (Vec<_>, Vec<_>) = extra_elements_with_bits.into_iter().unzip();
+        self.hash_with_inner::<DEPTH, C>(cache, &elements, &bits, 0)
+    }
+
+    fn hash_with_inner<const DEPTH: usize, C: HashCache>(
+        &self,
+        cache: &C,
+        extra_elements: &[Element],
+        extra_elements_bits: &[BitVec<u8, Msb0>],
+        path_depth: usize,
+    ) -> Element {
         match self {
             Self::Leaf(element) => *element,
             Self::Parent { left, right, .. } => {
-                let (left_path, right_path) = make_paths(path);
+                let right_start = extra_elements_bits
+                    .iter()
+                    .position(|b| b[path_depth])
+                    .unwrap_or(extra_elements_bits.len());
+                let lefts = &extra_elements_bits[..right_start];
+                let lefts_elements = &extra_elements[..right_start];
+                let rights = &extra_elements_bits[right_start..];
+                let rights_elements = &extra_elements[right_start..];
 
-                let left_hash = left.hash_with::<DEPTH>(extra_elements, &left_path);
-                let right_hash = right.hash_with::<DEPTH>(extra_elements, &right_path);
+                let left_hash = match lefts.is_empty() {
+                    true => left.hash(),
+                    false => left.hash_with_inner::<DEPTH, C>(
+                        cache,
+                        lefts_elements,
+                        lefts,
+                        path_depth + 1,
+                    ),
+                };
+                let right_hash = match rights.is_empty() {
+                    true => right.hash(),
+                    false => right.hash_with_inner::<DEPTH, C>(
+                        cache,
+                        rights_elements,
+                        rights,
+                        path_depth + 1,
+                    ),
+                };
 
-                hash_merge([left_hash, right_hash])
+                cache.hash(left_hash, right_hash)
             }
             Self::Empty { depth: 1 } => {
                 // we need to check whether there should be an element here
+                assert!(extra_elements.len() <= 1, "too many elements");
                 extra_elements
-                    .iter()
+                    .first()
                     .copied()
-                    .find(|e| e.lsb(DEPTH - 1).starts_with(path))
-                    .unwrap_or(empty_tree_hash(1))
+                    .unwrap_or_else(|| empty_tree_hash(1))
             }
             Self::Empty { depth } => {
-                // are there any elements that need to be "inserted" into this subtree?
-                let subtree_has_extra_elements = extra_elements
-                    .iter()
-                    .any(|e| e.lsb(DEPTH - 1).starts_with(path));
+                let child = Self::Parent {
+                    left: Box::new(Self::Empty { depth: *depth - 1 }),
+                    right: Box::new(Self::Empty { depth: *depth - 1 }),
+                    hash: empty_tree_hash(*depth),
+                    hash_dirty: false,
+                };
 
-                if subtree_has_extra_elements {
-                    // if we need to, split it into two subtrees and reuse the logic from the
-                    // Parent case
-
-                    let (left_path, right_path) = make_paths(path);
-
-                    let child = Self::Empty { depth: depth - 1 };
-
-                    let left_hash = child.hash_with::<DEPTH>(extra_elements, &left_path);
-                    let right_hash = child.hash_with::<DEPTH>(extra_elements, &right_path);
-
-                    hash_merge([left_hash, right_hash])
-                } else {
-                    // otherwise, we can just use the standard hash for this empty tree
-                    empty_tree_hash(*depth)
-                }
+                child.hash_with_inner::<DEPTH, C>(
+                    cache,
+                    extra_elements,
+                    extra_elements_bits,
+                    path_depth,
+                )
             }
         }
     }
@@ -96,19 +120,32 @@ impl Node {
     ///
     /// This does not update hashes, instead it marks nodes as "dirty" meaning the hash is
     /// potentially out of date
+    ///
+    /// The elements and bits should be sorted by the bits before calling this function
     pub(crate) fn insert_without_hashing<const N: usize>(
         &mut self,
-        element: Element,
-        bits: &BitSlice<u8, Msb0>,
+        elements: &[Element],
+        bits: &[BitVec<u8, Msb0>],
+        path_depth: usize,
     ) -> Result<bool, Collision> {
         match self {
-            Self::Leaf(e) if *e == element => Ok(false),
-            Self::Leaf(e) if e.lsb(N - 1) == element.lsb(N - 1) => Err(Collision {
-                in_tree: *e,
-                inserted: element,
-                depth: N,
-                struct_name: StructName::Tree,
-            }),
+            Self::Leaf(e) if elements.contains(e) => Ok(false),
+            Self::Leaf(e)
+                if bits.iter().any({
+                    let e_lsb = e.lsb(N - 1);
+                    move |b| b == &e_lsb[..]
+                }) =>
+            {
+                Err(Collision {
+                    in_tree: *e,
+                    inserted: *elements
+                        .iter()
+                        .find(|e| e.lsb(N - 1) == e.lsb(N - 1))
+                        .unwrap(),
+                    depth: N,
+                    struct_name: StructName::Tree,
+                })
+            }
             Self::Leaf(_) => unreachable!(),
             // Self::Leaf(e) => {
             //
@@ -122,20 +159,40 @@ impl Node {
                 hash_dirty,
                 ..
             } => {
-                let (head, tail) = bits.split_first().unwrap();
-                let result = match *head {
-                    false => left.insert_without_hashing::<N>(element, tail),
-                    true => right.insert_without_hashing::<N>(element, tail),
+                let rights_start = bits
+                    .iter()
+                    .position(|b| b[path_depth])
+                    .unwrap_or(bits.len());
+                let lefts = &bits[..rights_start];
+                let rights = &bits[rights_start..];
+                let lefts_elements = &elements[..rights_start];
+                let rights_elements = &elements[rights_start..];
+
+                let (left, right) = match (lefts.is_empty(), rights.is_empty()) {
+                    (true, true) => return Ok(false),
+                    (false, true) => (
+                        { left.insert_without_hashing::<N>(lefts_elements, lefts, path_depth + 1) },
+                        Ok(false),
+                    ),
+                    (true, false) => (Ok(false), {
+                        right.insert_without_hashing::<N>(rights_elements, rights, path_depth + 1)
+                    }),
+                    (false, false) => (
+                        right.insert_without_hashing::<N>(rights_elements, rights, path_depth + 1),
+                        left.insert_without_hashing::<N>(lefts_elements, lefts, path_depth + 1),
+                    ),
                 };
 
-                if matches!(result, Ok(true)) {
-                    *hash_dirty = true;
-                }
+                *hash_dirty = matches!(right, Ok(true)) || matches!(left, Ok(true));
 
-                result
+                right?;
+                left?;
+
+                Ok(*hash_dirty)
             }
             Self::Empty { depth: 1 } => {
-                *self = Self::Leaf(element);
+                assert_eq!(elements.len(), 1);
+                *self = Self::Leaf(elements.first().copied().unwrap());
                 Ok(true)
             }
 
@@ -144,19 +201,22 @@ impl Node {
                 *self = Self::Parent {
                     left: Box::new(Self::Empty { depth: *depth - 1 }),
                     right: Box::new(Self::Empty { depth: *depth - 1 }),
-                    // This value is arbitrary, since it is immediately overwritten (since the node
-                    // has `hash_dirty: true`)
-                    hash: Element::NULL_HASH,
+                    hash: empty_tree_hash(*depth),
                     hash_dirty: false,
                 };
 
                 // now try again
-                self.insert_without_hashing::<N>(element, bits)
+                self.insert_without_hashing::<N>(elements, bits, path_depth)
             }
         }
     }
 
-    pub fn recalculate_hashes<C: HashCache>(&mut self, cache: &C) {
+    pub fn recalculate_hashes<C: HashCache>(
+        &mut self,
+        cache: &C,
+        hash_remove_callback: &(impl Fn((&Element, &Element)) + Send + Sync),
+        hash_set_callback: &(impl Fn((&Element, &Element, &Element)) + Send + Sync),
+    ) {
         let Self::Parent {
             left,
             right,
@@ -171,13 +231,20 @@ impl Node {
             return;
         }
 
+        let left_hash_before = left.hash();
+        let right_hash_before = right.hash();
+        hash_remove_callback((&left_hash_before, &right_hash_before));
+
         rayon::join(
-            || left.recalculate_hashes(cache),
-            || right.recalculate_hashes(cache),
+            || left.recalculate_hashes(cache, hash_remove_callback, hash_set_callback),
+            || right.recalculate_hashes(cache, hash_remove_callback, hash_set_callback),
         );
 
-        *hash = cache.hash(left.hash(), right.hash());
+        let left_hash = left.hash();
+        let right_hash = right.hash();
+        *hash = cache.hash(left_hash, right_hash);
         *hash_dirty = false;
+        hash_set_callback((&left_hash, &right_hash, hash));
     }
 }
 
@@ -191,7 +258,7 @@ mod tests {
     #[proptest]
     fn root_hash_with_matches_insert(mut tree: Tree<16, i32>, batch: Batch<16, i32>) {
         let hash_with = tree.root_hash_with(&batch.elements().collect::<Vec<_>>());
-        let result = tree.insert_batch(batch);
+        let result = tree.insert_batch(batch, |_| {}, |_| {});
 
         prop_assume!(result.is_ok());
 

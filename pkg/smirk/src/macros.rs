@@ -9,9 +9,9 @@
 ///   Element::new(234) => "goodbye",
 /// };
 ///
-/// assert!(tree.contains_element(Element::new(123)));
-/// assert!(tree.contains_element(Element::new(234)));
-/// assert!(!tree.contains_element(Element::new(345)));
+/// assert!(tree.contains_element(&Element::new(123)));
+/// assert!(tree.contains_element(&Element::new(234)));
+/// assert!(!tree.contains_element(&Element::new(345)));
 ///
 /// // Alternatively, omit `=> expr` to create a `Tree<N, ()>`
 /// let tree: Tree<64, _> = smirk! {

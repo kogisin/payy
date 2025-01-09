@@ -11,6 +11,9 @@ pub enum Error {
     #[error("web3 contract error")]
     Web3Contract(#[from] web3::contract::Error),
 
+    #[error("web3 ethabi error")]
+    Web3Ethabi(#[from] web3::ethabi::Error),
+
     #[error("serde_json error")]
     SerdeJson(#[from] serde_json::Error),
 

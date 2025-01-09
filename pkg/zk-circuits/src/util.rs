@@ -105,6 +105,16 @@ where
     serializer.serialize_str(&base64_string)
 }
 
+pub fn serialize_base64_opt<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(v) => serialize_base64(v, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
 // Custom deserializer for base64 string to Vec<u8>
 pub fn deserialize_base64<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
 where

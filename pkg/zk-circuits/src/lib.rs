@@ -5,6 +5,7 @@
 pub mod aggregate_agg;
 pub mod aggregate_utxo;
 mod burn;
+mod burn_to;
 pub mod chips;
 pub mod compliance;
 pub mod constants;
@@ -36,4 +37,3 @@ pub use keys::CircuitKind;
 
 pub use error::{Error, Result};
 pub use zk_primitives::Base;
-

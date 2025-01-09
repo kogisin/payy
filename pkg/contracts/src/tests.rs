@@ -5,60 +5,45 @@ use smirk::Element;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use testutil::eth::EthNode;
+use testutil::eth::{EthNode, EthNodeOptions};
+use testutil::ACCOUNT_1_SK;
+use web3::contract::tokens::Tokenizable;
+use web3::ethabi::Token;
 use web3::signing::{keccak256, SecretKey};
 use web3::types::Address;
 use zk_circuits::constants::MERKLE_TREE_DEPTH;
-use zk_circuits::data::{Burn, Mint, ParameterSet};
+use zk_circuits::data::{BurnTo, Mint, ParameterSet};
 use zk_circuits::test::rollup::Rollup;
 
 use super::*;
 
-const ACCOUNT_1_SK: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
-pub struct Env {
+struct Env {
     _eth_node: Arc<EthNode>,
-    pub evm_secret_key: SecretKey,
-    pub evm_address: Address,
-    pub rollup_contract: RollupContract,
-    pub rollup_contract_addr: Address,
-    pub usdc_contract: USDCContract,
-    // client: Client,
+    evm_secret_key: SecretKey,
+    evm_address: Address,
+    rollup_contract: RollupContract,
+    usdc_contract: USDCContract,
 }
 
-pub async fn make_env() -> Env {
-    let eth_node = EthNode::run_and_deploy().await;
+async fn make_env(options: EthNodeOptions) -> Env {
+    let eth_node = EthNode::new(options).run_and_deploy().await;
 
-    let rpc = std::env::var("ETHEREUM_RPC").unwrap_or(eth_node.rpc_url());
-
-    let rollup_addr = std::env::var("ROLLUP_CONTRACT_ADDR")
-        .unwrap_or("2279b7a0a67db372996a5fab50d91eaa73d2ebe6".to_string());
-
-    let usdc_addr = &std::env::var("USDC_CONTRACT_ADDR")
-        .unwrap_or("5fbdb2315678afecb367f032d93f642f64180aa3".to_string());
-
-    let evm_secret_key = SecretKey::from_str(&std::env::var("PROVER_SECRET_KEY").unwrap_or(
-        // Seems to be the default when deploying with hardhat to a local node
-        ACCOUNT_1_SK.to_owned(),
-    ))
-    .unwrap();
-
+    let evm_secret_key = SecretKey::from_str(ACCOUNT_1_SK).unwrap();
     let evm_address = to_address(&evm_secret_key);
 
-    let client = Client::new(&rpc, None);
+    let rollup_contract = RollupContract::from_eth_node(&eth_node, evm_secret_key)
+        .await
+        .unwrap();
+    let usdc_contract = USDCContract::from_eth_node(&eth_node, evm_secret_key)
+        .await
+        .unwrap();
 
     Env {
         _eth_node: eth_node,
         evm_secret_key,
         evm_address,
-        rollup_contract: RollupContract::load(client.clone(), &rollup_addr, evm_secret_key)
-            .await
-            .unwrap(),
-        rollup_contract_addr: Address::from_str(&rollup_addr).unwrap(),
-        usdc_contract: USDCContract::load(client, usdc_addr, evm_secret_key)
-            .await
-            .unwrap(),
-        // client,
+        rollup_contract,
+        usdc_contract,
     }
 }
 
@@ -75,7 +60,7 @@ fn to_address(secret_key: &SecretKey) -> Address {
 }
 
 async fn sign_block(new_root: &Element, height: u64, other_hash: [u8; 32]) -> Vec<u8> {
-    let env = make_env().await;
+    let env = make_env(EthNodeOptions::default()).await;
 
     let proposal_hash = keccak256(&{
         let mut bytes = vec![];
@@ -122,21 +107,21 @@ async fn sign_block(new_root: &Element, height: u64, other_hash: [u8; 32]) -> Ve
 
 #[tokio::test]
 async fn root_hashes() {
-    let env: Env = make_env().await;
+    let env: Env = make_env(EthNodeOptions::default()).await;
 
     let _root_hashes = env.rollup_contract.root_hashes().await.unwrap();
 }
 
 #[tokio::test]
 async fn root_hash() {
-    let env = make_env().await;
+    let env = make_env(EthNodeOptions::default()).await;
 
     let _root_hash = env.rollup_contract.root_hash().await.unwrap();
 }
 
 #[tokio::test]
 async fn height() {
-    let env = make_env().await;
+    let env = make_env(EthNodeOptions::default()).await;
 
     let _height = env.rollup_contract.block_height().await.unwrap();
 }
@@ -144,7 +129,7 @@ async fn height() {
 #[tokio::test]
 
 async fn verify_transfers() {
-    let env = make_env().await;
+    let env = make_env(EthNodeOptions::default()).await;
     let params_21 = zk_circuits::data::ParameterSet::TwentyOne;
 
     let utxo_aggs = zk_circuits::test::agg_utxo::create_or_load_agg_utxo_snarks(params_21);
@@ -186,37 +171,15 @@ async fn verify_transfers() {
             other_hash,
             height,
             &[&sig],
+            500_000,
         )
         .await
         .unwrap();
 }
 
 #[tokio::test]
-async fn mint_from() {
-    let env = make_env().await;
-    let rollup = Rollup::new();
-    let bob = rollup.new_wallet();
-
-    // Create the proof
-    let note = bob.new_note(10 * 10u64.pow(6));
-    let mint = Mint::new([note.clone()]);
-    let params = ParameterSet::Eight;
-    let proof = mint.evm_proof(params).unwrap();
-
-    env.usdc_contract
-        .approve_max(env.rollup_contract_addr)
-        .await
-        .unwrap();
-
-    env.rollup_contract
-        .mint(&proof, &note.commitment(), &note.value(), &note.source())
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
 async fn mint_with_authorization() {
-    let env = make_env().await;
+    let env = make_env(EthNodeOptions::default()).await;
     let rollup = Rollup::new();
     let bob = rollup.new_wallet();
 
@@ -235,7 +198,7 @@ async fn mint_with_authorization() {
     // Sig for the USDC function
     let sig_bytes = env.usdc_contract.signature_for_receive(
         env.evm_address,
-        env.rollup_contract_addr,
+        env.rollup_contract.address(),
         amount.into(),
         valid_after,
         valid_before,
@@ -273,8 +236,31 @@ async fn mint_with_authorization() {
 }
 
 #[tokio::test]
-async fn burn() {
-    let env = make_env().await;
+async fn mint_from() {
+    let env = make_env(EthNodeOptions::default()).await;
+    let rollup = Rollup::new();
+    let bob = rollup.new_wallet();
+
+    // Create the proof
+    let note = bob.new_note(10 * 10u64.pow(6));
+    let mint = Mint::new([note.clone()]);
+    let params = ParameterSet::Eight;
+    let proof = mint.evm_proof(params).unwrap();
+
+    env.usdc_contract
+        .approve_max(env.rollup_contract.address())
+        .await
+        .unwrap();
+
+    env.rollup_contract
+        .mint(&proof, &note.commitment(), &note.value(), &note.source())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn burn_to() {
+    let env = make_env(EthNodeOptions::default()).await;
 
     // Create the proof
     let mut rollup = Rollup::new();
@@ -290,18 +276,19 @@ async fn burn() {
         .unwrap();
 
     let note = bob_note.note();
-    let burn = Burn {
+    let burn = BurnTo {
         notes: [note.clone()],
         secret_key: bob.pk,
         to_address: convert_h160_to_element(&env.evm_address),
+        kind: Element::ZERO,
     };
 
     let proof = burn.evm_proof(ParameterSet::Nine).unwrap();
 
     env.rollup_contract
-        .burn(
-            // User1 address (where we will send the burned funds)
-            &env.evm_address,
+        .burn_to_address(
+            &burn.kind,
+            &burn.to_address,
             &proof,
             &note.nullifier(bob.pk),
             &note.value(),
@@ -313,8 +300,210 @@ async fn burn() {
 }
 
 #[tokio::test]
+async fn burn_to_router() {
+    let env = make_env(EthNodeOptions::default()).await;
+
+    // Create the proof
+    let mut rollup = Rollup::new();
+    let bob = rollup.new_wallet();
+
+    let bob_note = rollup.unverified_add_unspent_note(&bob, 100);
+
+    // Set the root, we add some pre-existing values to the tree before generating the UTXO,
+    // so the tree is not empty
+    env.rollup_contract
+        .set_root(&rollup.root_hash())
+        .await
+        .unwrap();
+
+    let owner = env.evm_address;
+    let router = Address::from_str("4a679253410272dd5232b3ff7cf5dbb88f295319").unwrap();
+    let return_address = Address::from_str("0000000000000000000000000000000000000001").unwrap();
+
+    let mut router_calldata = keccak256(b"burnToAddress(address,address,uint256)")[0..4].to_vec();
+    router_calldata.extend_from_slice(&web3::ethabi::encode(&[
+        Address::from_str("09635f643e140090a9a8dcd712ed6285858cebef")
+            .unwrap()
+            .into_token(),
+        owner.into_token(),
+        convert_element_to_h256(&bob_note.note().value).into_token(),
+    ]));
+
+    let msg = web3::ethabi::encode(&[
+        Token::Address(router),
+        Token::Bytes(router_calldata.clone()),
+        Token::Address(return_address),
+    ]);
+
+    let mut msg_hash = keccak256(&msg);
+    // Bn256 can't fit the full hash, so we remove the first 3 bits
+    msg_hash[0] &= 0x1f; // 0b11111
+
+    let note = bob_note.note();
+    let burn = BurnTo {
+        notes: [note.clone()],
+        secret_key: bob.pk,
+        to_address: Element::from_be_bytes(msg_hash),
+        kind: Element::ONE,
+    };
+
+    let proof = burn.evm_proof(ParameterSet::Nine).unwrap();
+
+    env.rollup_contract
+        .burn_to_router(
+            &burn.kind,
+            &burn.to_address,
+            &proof,
+            &note.nullifier(bob.pk),
+            &note.value(),
+            &note.source(),
+            &burn.signature(&note),
+            &router,
+            &router_calldata,
+            &Address::from_str("0000000000000000000000000000000000000001").unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn substitute_burn() {
+    let env = make_env(EthNodeOptions {
+        use_noop_verifier: true,
+        ..Default::default()
+    })
+    .await;
+
+    // Create the proof
+    let mut rollup = Rollup::new();
+    let bob = rollup.new_wallet();
+
+    let bob_note = rollup.unverified_add_unspent_note(&bob, 100);
+
+    // Set the root, we add some pre-existing values to the tree before generating the UTXO,
+    // so the tree is not empty
+    env.rollup_contract
+        .set_root(&rollup.root_hash())
+        .await
+        .unwrap();
+
+    let owner = Address::from_str("1111111111111111111111111111111111111111").unwrap();
+    let router = Address::from_str("4a679253410272dd5232b3ff7cf5dbb88f295319").unwrap();
+    let return_address = Address::from_str("0000000000000000000000000000000000000001").unwrap();
+
+    let mut router_calldata = keccak256(b"burnToAddress(address,address,uint256)")[0..4].to_vec();
+    router_calldata.extend_from_slice(&web3::ethabi::encode(&[
+        env.usdc_contract.address().into_token(),
+        owner.into_token(),
+        convert_element_to_h256(&bob_note.note().value).into_token(),
+    ]));
+
+    let msg = web3::ethabi::encode(&[
+        Token::Address(router),
+        Token::Bytes(router_calldata.clone()),
+        Token::Address(return_address),
+    ]);
+
+    let mut msg_hash = keccak256(&msg);
+    // Bn256 can't fit the full hash, so we remove the first 3 bits
+    msg_hash[0] &= 0x1f; // 0b11111
+
+    let note = bob_note.note();
+    let burn = BurnTo {
+        notes: [note.clone()],
+        secret_key: bob.pk,
+        to_address: Element::from_be_bytes(msg_hash),
+        kind: Element::ONE,
+    };
+
+    let proof = burn.evm_proof(ParameterSet::Nine).unwrap();
+
+    let nullifier = note.nullifier(bob.pk);
+    env.rollup_contract
+        .burn_to_router(
+            &burn.kind,
+            &burn.to_address,
+            &proof,
+            &nullifier,
+            &note.value(),
+            &note.source(),
+            &burn.signature(&note),
+            &router,
+            &router_calldata,
+            &Address::from_str("0000000000000000000000000000000000000001").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let owner_balance_pre_substitute = env.usdc_contract.balance(owner).await.unwrap();
+    assert_eq!(owner_balance_pre_substitute, U256::from(0));
+
+    let substitutor_balance_pre_substitute =
+        env.usdc_contract.balance(env.evm_address).await.unwrap();
+
+    let rollup_balance_pre_substitute = env
+        .usdc_contract
+        .balance(env.rollup_contract.address())
+        .await
+        .unwrap();
+
+    env.usdc_contract
+        .approve_max(env.rollup_contract.address())
+        .await
+        .unwrap();
+
+    assert!(!env
+        .rollup_contract
+        .was_burn_substituted(&nullifier)
+        .await
+        .unwrap());
+
+    let txn = env
+        .rollup_contract
+        .substitute_burn(&nullifier, &note.value())
+        .await
+        .unwrap();
+
+    while env
+        .rollup_contract
+        .client
+        .client()
+        .eth()
+        .transaction_receipt(txn)
+        .await
+        .unwrap()
+        .is_none()
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    assert_eq!(
+        env.usdc_contract.balance(owner).await.unwrap(),
+        U256::from(100)
+    );
+    assert_eq!(
+        env.usdc_contract.balance(env.evm_address).await.unwrap(),
+        substitutor_balance_pre_substitute - U256::from(100)
+    );
+
+    assert_eq!(
+        env.usdc_contract
+            .balance(env.rollup_contract.address())
+            .await
+            .unwrap(),
+        rollup_balance_pre_substitute
+    );
+
+    assert!(env
+        .rollup_contract
+        .was_burn_substituted(&nullifier)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
 async fn set_validators() {
-    let env = make_env().await;
+    let env = make_env(EthNodeOptions::default()).await;
 
     // let's also test the worker
     let worker_rollup_contract = env.rollup_contract.clone();

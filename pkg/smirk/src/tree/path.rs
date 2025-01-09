@@ -281,7 +281,7 @@ mod tests {
     fn calculated_root_hash_is_correct(tree: Tree<64, i32>, element: Element) {
         let path = tree.path_for(element);
 
-        let (correct, incorrect) = match tree.contains_element(element) {
+        let (correct, incorrect) = match tree.contains_element(&element) {
             true => (element, Element::NULL_HASH),
             false => (Element::NULL_HASH, element),
         };

@@ -2,6 +2,7 @@ use std::{future::Future, time::Duration};
 
 use crate::Result;
 use ethereum_types::{Address, H256, U64};
+use testutil::eth::EthNode;
 use tokio::time::interval;
 use web3::{
     contract::{tokens::Tokenize, Contract, Options},
@@ -16,6 +17,7 @@ use web3::{
 pub struct Client {
     client: Web3<Http>,
     minimum_gas_price: Option<U256>,
+    pub use_latest_for_nonce: bool,
 }
 
 impl Client {
@@ -26,6 +28,7 @@ impl Client {
         Client {
             client,
             minimum_gas_price,
+            use_latest_for_nonce: false,
         }
     }
 
@@ -46,6 +49,10 @@ impl Client {
             address.parse()?,
             contract_abi,
         ))
+    }
+
+    pub fn from_eth_node(eth_node: &EthNode) -> Self {
+        Self::new(&eth_node.rpc_url(), None)
     }
 
     pub async fn eth_balance(&self, address: Address) -> Result<U256> {
@@ -70,18 +77,34 @@ impl Client {
     }
 
     #[tracing::instrument(err, ret, skip(self))]
-    async fn pending_nonce(&self, address: Address) -> Result<U256, web3::Error> {
+    pub async fn get_nonce(
+        &self,
+        address: Address,
+        block: web3::types::BlockNumber,
+    ) -> Result<U256, web3::Error> {
+        self.client
+            .eth()
+            .transaction_count(address, Some(block))
+            .await
+    }
+
+    #[tracing::instrument(err, ret, skip(self))]
+    pub async fn nonce(&self, address: Address) -> Result<U256, web3::Error> {
         retry_on_network_failure(move || {
-            self.client
-                .eth()
-                .transaction_count(address, Some(web3::types::BlockNumber::Pending))
+            self.get_nonce(
+                address,
+                match self.use_latest_for_nonce {
+                    true => web3::types::BlockNumber::Latest,
+                    false => web3::types::BlockNumber::Pending,
+                },
+            )
         })
         .await
     }
 
     pub(crate) async fn options(&self, address: Address) -> Result<Options, web3::Error> {
         let gas_price = self.fast_gas_price().await?;
-        let nonce = self.pending_nonce(address).await?;
+        let nonce = self.nonce(address).await?;
 
         Ok(Options {
             gas: Some(10_000_000.into()),

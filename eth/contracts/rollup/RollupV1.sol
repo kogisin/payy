@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.9;
+pragma solidity 0.8.20;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -61,7 +61,7 @@ contract RollupV1 is Initializable, OwnableUpgradeable {
     // Since the Initializable._initialized version number is private, we need to keep track of it ourselves
     uint8 public version;
 
-    bytes32 public DOMAIN_SEPARATOR;
+    bytes32 private _DOMAIN_SEPARATOR;
 
     AggregateVerifierV1 public aggregateVerifier;
     MintVerifierV1 public mintVerifier;
@@ -104,7 +104,7 @@ contract RollupV1 is Initializable, OwnableUpgradeable {
 
         __Ownable_init(owner);
 
-        DOMAIN_SEPARATOR = keccak256(
+        _DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256(
                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -376,7 +376,7 @@ contract RollupV1 is Initializable, OwnableUpgradeable {
         bytes32 commitment,
         bytes32 value,
         bytes32 source
-    ) public {
+    ) public virtual {
         if (mints[commitment] != 0) {
             revert("Mint already exists");
         }
@@ -418,7 +418,7 @@ contract RollupV1 is Initializable, OwnableUpgradeable {
         uint256 v2,
         bytes32 r2,
         bytes32 s2
-    ) public {
+    ) public virtual {
         if (mints[commitment] != 0) {
             revert("Mint already exists");
         }
@@ -436,7 +436,7 @@ contract RollupV1 is Initializable, OwnableUpgradeable {
             )
         );
         bytes32 computedHash = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+            abi.encodePacked("\x19\x01", _DOMAIN_SEPARATOR, structHash)
         );
         address signer = ecrecover(computedHash, uint8(v2), r2, s2);
         require(signer == from, "Invalid signer");
@@ -468,14 +468,14 @@ contract RollupV1 is Initializable, OwnableUpgradeable {
         bytes32 value,
         bytes32 source,
         bytes32 sig
-    ) public {
+    ) public virtual {
         burnVerifier.verify(
             proof,
             [bytes32(uint256(uint160(to))), nullifer, value, source, sig]
         );
 
         // Add burn to pending burns, this still needs to be verifier with the verifyBlock,
-        // but Solid validators will check that this commitment exists in the burn map before
+        // but validators will check that this nullifier exists in the burn map before
         // accepting the burn txn into a block
         burns[nullifer] = Burn(to, uint256(value));
     }

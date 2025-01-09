@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Originally copied from https://github.com/scroll-tech/scroll/blob/ff380141a8cbcc214dc65f17ffa44faf4be646b6/contracts/src/libraries/verifier/ZkEvmVerifierV1.sol
 
-pragma solidity ^0.8.9;
+pragma solidity 0.8.20;
 
 import "./Verifier.sol";
 
@@ -37,10 +37,9 @@ contract BurnVerifierV1 is Verifier {
      *************************/
 
     function verify(
-        // TODO: optimize this to use calldata
         bytes calldata proof,
         // Start of instances. Be careful reordering these because of the `calldatacopy` below
-        // [nullifier, value, source, root]
+        // [addr, nullifier, value, source, root]
         bytes32[5] calldata instances
     ) external view {
         for (uint256 i = 0; i < 5; i++) {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.9;
+pragma solidity 0.8.20;
 
 import "./RollupV2.sol";
 
@@ -21,7 +21,7 @@ contract RollupV3 is RollupV2 {
         uint256 height,
         // uint64 skips,
         Signature[] calldata signatures
-    ) public override onlyProver {
+    ) public virtual override onlyProver {
         updateValidatorSetIndex(height);
         ValidatorSet storage validatorSet = getValidators();
 

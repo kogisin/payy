@@ -4,6 +4,7 @@ use ethereum_types::U64;
 use rustc_hex::FromHex;
 use secp256k1::{Message, SECP256K1};
 use sha3::{Digest, Keccak256};
+use testutil::eth::EthNode;
 use web3::{
     contract::{tokens::Tokenize, Contract},
     signing::{Key, SecretKey, SecretKeyRef},
@@ -11,6 +12,7 @@ use web3::{
     types::{Address, H256, U256},
 };
 
+#[derive(Clone)]
 pub struct USDCContract {
     client: Client,
     contract: Contract<Http>,
@@ -75,6 +77,13 @@ impl USDCContract {
         ))
     }
 
+    pub async fn from_eth_node(eth_node: &EthNode, signer: SecretKey) -> Result<Self> {
+        let usdc_addr = "5fbdb2315678afecb367f032d93f642f64180aa3";
+
+        let client = Client::from_eth_node(eth_node);
+        Self::load(client, usdc_addr, signer).await
+    }
+
     pub async fn call(&self, func: &str, params: impl Tokenize + Clone) -> Result<H256> {
         self.client
             .call(
@@ -98,7 +107,8 @@ impl USDCContract {
         nonce: H256,
         signer: secp256k1::SecretKey,
     ) -> [u8; 65] {
-        let msg_digest = self.signature_msg_digest_for_receive(
+        let msg_digest = Self::signature_msg_digest_for_receive(
+            self.domain_separator,
             from,
             to,
             amount,
@@ -138,7 +148,7 @@ impl USDCContract {
     /// )
     /// ```
     pub fn signature_msg_digest_for_receive(
-        &self,
+        domain_separator: H256,
         from: Address,
         to: Address,
         amount: U256,
@@ -168,7 +178,7 @@ impl USDCContract {
 
         let mut hasher = Keccak256::new();
         hasher.update([0x19, 0x01]);
-        hasher.update(self.domain_separator);
+        hasher.update(domain_separator);
         hasher.update(Keccak256::digest(&data));
         let msg_hash = hasher.finalize();
 
@@ -223,6 +233,11 @@ impl USDCContract {
     #[tracing::instrument(err, ret, skip(self))]
     pub async fn approve_max(&self, from: Address) -> Result<H256> {
         self.call("approve", (from, web3::types::U256::MAX)).await
+    }
+
+    #[tracing::instrument(err, ret, skip(self))]
+    pub async fn approve(&self, from: Address, amount: u128) -> Result<H256> {
+        self.call("approve", (from, amount)).await
     }
 }
 
